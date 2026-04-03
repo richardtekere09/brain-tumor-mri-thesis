@@ -1,0 +1,17 @@
+torch>=2.0
+torchvision
+monai>=1.3
+transformers>=4.35
+nibabel>=5.0
+numpy
+scipy
+scikit-learn
+scikit-image
+PyYAML
+tqdm
+matplotlib
+pandas
+huggingface_hub
+einops
+timm
+kaggle

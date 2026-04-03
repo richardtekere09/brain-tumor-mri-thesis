@@ -1,0 +1,62 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Data — never commit MRI data or raw archives
+data/raw/
+data/BraTS2020_TrainingData/
+data/BraTS2020_ValidationData/
+data/TextBraTS/
+data/TextBraTS_hf/
+data/merged/
+
+# Pretrained weights — large binary files
+pretrained/
+
+# Checkpoints — generated during training
+checkpoints/
+
+# Results — generated outputs
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+
+# Config secrets (Kaggle credentials)
+kaggle.json
+*.env
+
+# Claude Code internal files
+CLAUDE_CODE_PROJECT_PROMPT.md
+TASK_LIST.md
+.claude/
