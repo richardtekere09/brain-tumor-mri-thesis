@@ -80,27 +80,48 @@ def run_check(case: str, brats_root: str, output_path: str) -> None:
     # --------------------------------------------------------- save PNG
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # Pick central axial slice (axis=3 in [C,H,W,D])
-    mid_z = image.shape[3] // 2
+    # Pick the axial slice with the most ET voxels so all regions are visible.
+    # Fall back to the WT-richest slice if ET is absent.
+    et_per_slice = label[2].sum(dim=(0, 1))   # sum over H, W → [D]
+    wt_per_slice = label[0].sum(dim=(0, 1))
 
-    t1ce = image[1, :, :, mid_z].numpy()   # T1ce channel
-    wt   = label[0, :, :, mid_z].numpy()   # WT mask
-    et   = label[2, :, :, mid_z].numpy()   # ET mask
+    best_z = int(et_per_slice.argmax()) if et_per_slice.max() > 0 else int(wt_per_slice.argmax())
+    logger.info("Visualising axial slice z=%d (max ET voxels=%d)", best_z, int(et_per_slice[best_z]))
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    fig.suptitle(f"{case} — axial slice z={mid_z}", fontsize=13)
+    t1ce = image[1, :, :, best_z].numpy()   # T1ce channel [H, W]
+    wt   = label[0, :, :, best_z].numpy()   # WT mask
+    tc   = label[1, :, :, best_z].numpy()   # TC mask
+    et   = label[2, :, :, best_z].numpy()   # ET mask
 
-    axes[0].imshow(t1ce.T, cmap="gray", origin="lower")
-    axes[0].set_title("T1ce")
+    # Normalise T1ce to [0, 1] for display
+    t1ce_norm = (t1ce - t1ce.min()) / (t1ce.max() - t1ce.min() + 1e-8)
+
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    fig.suptitle(f"{case} — axial slice z={best_z}  |  WT={int(wt.sum())} TC={int(tc.sum())} ET={int(et.sum())} voxels",
+                 fontsize=11)
+
+    # Panel 1 — raw T1ce
+    axes[0].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+    axes[0].set_title("T1ce (raw)")
     axes[0].axis("off")
 
-    axes[1].imshow(wt.T, cmap="Reds", origin="lower", vmin=0, vmax=1)
-    axes[1].set_title("WT mask")
+    # Panel 2 — T1ce + WT overlay (red, semi-transparent)
+    axes[1].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+    axes[1].imshow(wt.T, cmap="Reds", alpha=0.45, origin="lower", vmin=0, vmax=1)
+    axes[1].set_title("T1ce + WT (red)")
     axes[1].axis("off")
 
-    axes[2].imshow(et.T, cmap="Blues", origin="lower", vmin=0, vmax=1)
-    axes[2].set_title("ET mask")
+    # Panel 3 — T1ce + TC overlay (yellow)
+    axes[2].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+    axes[2].imshow(tc.T, cmap="YlOrBr", alpha=0.5, origin="lower", vmin=0, vmax=1)
+    axes[2].set_title("T1ce + TC (yellow)")
     axes[2].axis("off")
+
+    # Panel 4 — T1ce + ET overlay (blue) — should align with bright enhancing areas
+    axes[3].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+    axes[3].imshow(et.T, cmap="Blues", alpha=0.55, origin="lower", vmin=0, vmax=1)
+    axes[3].set_title("T1ce + ET (blue)")
+    axes[3].axis("off")
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=120)
