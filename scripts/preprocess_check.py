@@ -80,51 +80,94 @@ def run_check(case: str, brats_root: str, output_path: str) -> None:
     # --------------------------------------------------------- save PNG
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # Pick the axial slice with the most ET voxels so all regions are visible.
-    # Fall back to the WT-richest slice if ET is absent.
-    et_per_slice = label[2].sum(dim=(0, 1))   # sum over H, W → [D]
-    wt_per_slice = label[0].sum(dim=(0, 1))
+    # Choose 3 informative axial slices spread across the tumor depth.
+    # Use z-indices where WT is present, then sample at 25 / 50 / 75 percentile.
+    wt_per_slice = label[0].sum(dim=(0, 1))   # [D]
+    et_per_slice = label[2].sum(dim=(0, 1))   # [D]
+    tumor_zs = torch.where(wt_per_slice > 0)[0]
 
-    best_z = int(et_per_slice.argmax()) if et_per_slice.max() > 0 else int(wt_per_slice.argmax())
-    logger.info("Visualising axial slice z=%d (max ET voxels=%d)", best_z, int(et_per_slice[best_z]))
+    if len(tumor_zs) >= 3:
+        z_low  = int(tumor_zs[len(tumor_zs) // 4])
+        z_mid  = int(tumor_zs[len(tumor_zs) // 2])
+        z_high = int(tumor_zs[3 * len(tumor_zs) // 4])
+    else:
+        z_mid  = int(wt_per_slice.argmax())
+        z_low  = max(0, z_mid - 10)
+        z_high = min(image.shape[3] - 1, z_mid + 10)
 
-    t1ce = image[1, :, :, best_z].numpy()   # T1ce channel [H, W]
-    wt   = label[0, :, :, best_z].numpy()   # WT mask
-    tc   = label[1, :, :, best_z].numpy()   # TC mask
-    et   = label[2, :, :, best_z].numpy()   # ET mask
+    slices = [z_low, z_mid, z_high]
+    slice_labels = ["lower", "middle", "upper"]
+    logger.info("Visualising slices z=%s", slices)
 
-    # Normalise T1ce to [0, 1] for display
-    t1ce_norm = (t1ce - t1ce.min()) / (t1ce.max() - t1ce.min() + 1e-8)
+    # Helper: build a colour-coded segmentation RGB image from binary channels.
+    # WT-only (edema) = green, TC-only = orange, ET = magenta
+    def _seg_rgb(wt_sl: np.ndarray, tc_sl: np.ndarray, et_sl: np.ndarray) -> np.ndarray:
+        H, W = wt_sl.shape
+        rgb = np.zeros((H, W, 3), dtype=np.float32)
+        edema = (wt_sl > 0) & (tc_sl == 0)          # WT - TC
+        core  = (tc_sl > 0) & (et_sl == 0)           # TC - ET
+        rgb[edema] = [0.2, 0.8, 0.2]                 # green  — edema
+        rgb[core]  = [1.0, 0.5, 0.0]                 # orange — necrotic core
+        rgb[et_sl > 0] = [0.9, 0.1, 0.9]             # magenta — enhancing tumour
+        return rgb
 
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    fig.suptitle(f"{case} — axial slice z={best_z}  |  WT={int(wt.sum())} TC={int(tc.sum())} ET={int(et.sum())} voxels",
-                 fontsize=11)
+    # 3 rows × 5 columns: T1ce | T1ce+WT | T1ce+TC | T1ce+ET | Seg mask
+    fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+    col_titles = ["T1ce (raw)", "T1ce + WT (red)", "T1ce + TC (orange)", "T1ce + ET (blue)", "Seg mask"]
+    for col, title in enumerate(col_titles):
+        axes[0, col].set_title(title, fontsize=10, fontweight="bold")
 
-    # Panel 1 — raw T1ce
-    axes[0].imshow(t1ce_norm.T, cmap="gray", origin="lower")
-    axes[0].set_title("T1ce (raw)")
-    axes[0].axis("off")
+    for row, (z, zlabel) in enumerate(zip(slices, slice_labels)):
+        t1ce = image[1, :, :, z].numpy()
+        wt   = label[0, :, :, z].numpy()
+        tc   = label[1, :, :, z].numpy()
+        et   = label[2, :, :, z].numpy()
 
-    # Panel 2 — T1ce + WT overlay (red, semi-transparent)
-    axes[1].imshow(t1ce_norm.T, cmap="gray", origin="lower")
-    axes[1].imshow(wt.T, cmap="Reds", alpha=0.45, origin="lower", vmin=0, vmax=1)
-    axes[1].set_title("T1ce + WT (red)")
-    axes[1].axis("off")
+        t1ce_norm = (t1ce - t1ce.min()) / (t1ce.max() - t1ce.min() + 1e-8)
+        seg_rgb   = _seg_rgb(wt, tc, et)
 
-    # Panel 3 — T1ce + TC overlay (yellow)
-    axes[2].imshow(t1ce_norm.T, cmap="gray", origin="lower")
-    axes[2].imshow(tc.T, cmap="YlOrBr", alpha=0.5, origin="lower", vmin=0, vmax=1)
-    axes[2].set_title("T1ce + TC (yellow)")
-    axes[2].axis("off")
+        row_info = f"z={z} ({zlabel})  WT={int(wt.sum())} TC={int(tc.sum())} ET={int(et.sum())}"
+        axes[row, 0].set_ylabel(row_info, fontsize=8, rotation=0, labelpad=110, va="center")
 
-    # Panel 4 — T1ce + ET overlay (blue) — should align with bright enhancing areas
-    axes[3].imshow(t1ce_norm.T, cmap="gray", origin="lower")
-    axes[3].imshow(et.T, cmap="Blues", alpha=0.55, origin="lower", vmin=0, vmax=1)
-    axes[3].set_title("T1ce + ET (blue)")
-    axes[3].axis("off")
+        # Col 0 — raw T1ce
+        axes[row, 0].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+        axes[row, 0].axis("off")
+
+        # Col 1 — T1ce + WT
+        axes[row, 1].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+        axes[row, 1].imshow(wt.T, cmap="Reds", alpha=0.45, origin="lower", vmin=0, vmax=1)
+        axes[row, 1].axis("off")
+
+        # Col 2 — T1ce + TC
+        axes[row, 2].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+        axes[row, 2].imshow(tc.T, cmap="YlOrBr", alpha=0.5, origin="lower", vmin=0, vmax=1)
+        axes[row, 2].axis("off")
+
+        # Col 3 — T1ce + ET
+        axes[row, 3].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+        axes[row, 3].imshow(et.T, cmap="Blues", alpha=0.55, origin="lower", vmin=0, vmax=1)
+        axes[row, 3].axis("off")
+
+        # Col 4 — colour-coded seg mask (green=edema, orange=core, magenta=ET)
+        axes[row, 4].imshow(t1ce_norm.T, cmap="gray", origin="lower")
+        axes[row, 4].imshow(seg_rgb.transpose(1, 0, 2), alpha=0.65, origin="lower")
+        axes[row, 4].axis("off")
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elems = [
+        Patch(facecolor=(0.2, 0.8, 0.2), label="Edema (WT−TC)"),
+        Patch(facecolor=(1.0, 0.5, 0.0), label="Necrotic core (TC−ET)"),
+        Patch(facecolor=(0.9, 0.1, 0.9), label="Enhancing tumour (ET)"),
+    ]
+    fig.legend(handles=legend_elems, loc="lower center", ncol=3, fontsize=9,
+               bbox_to_anchor=(0.5, -0.01))
+
+    fig.suptitle(f"{case} — preprocessing check  |  patch {tuple(image.shape[1:])}",
+                 fontsize=13, fontweight="bold", y=1.01)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=120)
+    plt.savefig(output_path, dpi=120, bbox_inches="tight")
     plt.close()
     logger.info("PNG saved → %s", output_path)
     logger.info("─" * 50)
