@@ -1,0 +1,25 @@
+data:
+  brats_root: "data/BraTS2020_TrainingData"
+  textbrats_root: "data/TextBraTS_hf/TextBraTSData"
+  splits_file: "data/splits.json"
+  patch_size: [96, 96, 96]
+  num_workers: 2
+
+training:
+  batch_size: 1
+  max_epochs: 80
+  early_stopping_patience: 12
+  optimizer: adamw
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  mixed_precision: true
+  grad_accumulation_steps: 1
+  scheduler: reduce_on_plateau
+  scheduler_patience: 5
+  seed: 42
+
+checkpointing:
+  save_dir: "checkpoints"
+  save_last: true
+  save_best: true
+  metric: val_dice_mean

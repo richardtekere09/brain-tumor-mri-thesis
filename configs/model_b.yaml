@@ -1,0 +1,16 @@
+_base_: base.yaml
+
+model:
+  name: swin_unetr
+  in_channels: 4
+  out_channels: 3
+  feature_size: 48
+  use_checkpoint: true
+  pretrained_weights: "pretrained/swin_unetr_brats.pt"
+  freeze_patch_embed_epochs: 10
+
+training:
+  grad_accumulation_steps: 2
+
+checkpointing:
+  save_dir: "checkpoints/model_b"

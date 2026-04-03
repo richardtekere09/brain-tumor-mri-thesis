@@ -1,0 +1,24 @@
+_base_: base.yaml
+
+model:
+  name: vision_text
+  in_channels: 4
+  out_channels: 3
+  feature_size: 48
+  swin_weights: "pretrained/swin_unetr_brats.pt"
+  biobert_name: "dmis-lab/biobert-v1.1"
+  freeze_biobert: true
+  fusion_dim: 768
+  num_slots: 5
+  slot_weights: [1.0, 1.0, 1.0, 1.0, 1.0]
+
+loss:
+  lambda_seg: 1.0
+  lambda_text: 0.3
+  lambda_align: 0.1
+
+training:
+  grad_accumulation_steps: 2
+
+checkpointing:
+  save_dir: "checkpoints/model_c"

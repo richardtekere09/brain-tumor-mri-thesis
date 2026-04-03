@@ -1,0 +1,14 @@
+_base_: base.yaml
+
+model:
+  name: resunet18
+  in_channels: 4
+  out_channels: 3
+  medicalnet_weights: "pretrained/resnet_18_23dataset.pth"
+  freeze_stage1_epochs: 5
+
+training:
+  grad_accumulation_steps: 1
+
+checkpointing:
+  save_dir: "checkpoints/model_a"
