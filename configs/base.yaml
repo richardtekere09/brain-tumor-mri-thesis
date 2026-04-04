@@ -7,7 +7,7 @@ data:
 
 training:
   batch_size: 1
-  max_epochs: 20
+  max_epochs: 50
   early_stopping_patience: 12
   optimizer: adamw
   lr: 1.0e-4
