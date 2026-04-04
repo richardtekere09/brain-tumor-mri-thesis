@@ -56,6 +56,9 @@ desktop.ini
 kaggle.json
 *.env
 
+# Upload zips — large files for Kaggle/Colab, upload manually
+uploads/
+
 # Claude Code internal files
 CLAUDE_CODE_PROJECT_PROMPT.md
 TASK_LIST.md
