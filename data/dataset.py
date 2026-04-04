@@ -131,8 +131,31 @@ class BraTSDataset(Dataset):
 
         with open(splits_file, encoding="utf-8") as f:
             splits = json.load(f)
-        self.case_ids: List[str] = splits[split]
-        logger.info("BraTSDataset split=%s  cases=%d", split, len(self.case_ids))
+        all_ids: List[str] = splits[split]
+
+        # Filter out cases with missing files so DataLoader workers never crash
+        self.case_ids = []
+        skipped = []
+        for cid in all_ids:
+            case_dir = os.path.join(brats_root, cid)
+            ok = True
+            for stem in [f"{cid}_{m}" for m in _MODALITIES] + [f"{cid}_seg"]:
+                found = any(
+                    os.path.exists(os.path.join(case_dir, stem + ext))
+                    for ext in (".nii", ".nii.gz")
+                )
+                if not found:
+                    ok = False
+                    break
+            if ok:
+                self.case_ids.append(cid)
+            else:
+                skipped.append(cid)
+
+        if skipped:
+            logger.warning("Skipped %d cases with missing files: %s", len(skipped), skipped)
+        logger.info("BraTSDataset split=%s  cases=%d (skipped=%d)",
+                    split, len(self.case_ids), len(skipped))
 
     def __len__(self) -> int:
         return len(self.case_ids)
