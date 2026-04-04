@@ -167,10 +167,11 @@ def maybe_freeze_stage1(model: nn.Module, epoch: int, cfg: Dict) -> None:
 # ---------------------------------------------------------------------------
 
 def validate(model: nn.Module, loader: DataLoader, device: torch.device,
-             model_name: str) -> Dict[str, float]:
+             model_name: str, loss_fn=None) -> Dict[str, float]:
     from monai.inferers import sliding_window_inference
     model.eval()
     dice_scores = {"wt": [], "tc": [], "et": []}
+    val_losses = []
 
     with torch.no_grad():
         for batch in loader:
@@ -198,8 +199,24 @@ def validate(model: nn.Module, loader: DataLoader, device: torch.device,
                 dice = (2 * inter / (p.sum() + t.sum() + 1e-8)).item()
                 dice_scores[key].append(dice)
 
+            # Val loss (same criterion as training)
+            if loss_fn is not None:
+                if model_name == "vision_text":
+                    seg, slot_pred, img_emb, txt_emb = model(
+                        image,
+                        batch["input_ids"].to(device),
+                        batch["attention_mask"].to(device),
+                    )
+                    vl, _ = loss_fn(seg, label, slot_pred,
+                                    batch["slot_labels"].to(device),
+                                    img_emb, txt_emb)
+                else:
+                    vl = loss_fn(pred_logits, label)
+                val_losses.append(vl.item())
+
     means = {k: float(np.mean(v)) for k, v in dice_scores.items()}
     means["mean"] = float(np.mean(list(means.values())))
+    means["val_loss"] = float(np.mean(val_losses)) if val_losses else 0.0
     return means
 
 
@@ -409,12 +426,12 @@ def main() -> None:
         )
         epoch_time = time.time() - t0
 
-        val_dice = validate(model, val_loader, device, model_name)
+        val_dice = validate(model, val_loader, device, model_name, loss_fn)
         scheduler.step(val_dice["mean"])
 
         logger.info(
-            "Epoch %3d | loss=%.4f | val WT=%.4f TC=%.4f ET=%.4f mean=%.4f | %.1fs",
-            epoch + 1, train_loss,
+            "Epoch %3d | train_loss=%.4f | val_loss=%.4f | val WT=%.4f TC=%.4f ET=%.4f mean=%.4f | %.1fs",
+            epoch + 1, train_loss, val_dice["val_loss"],
             val_dice["wt"], val_dice["tc"], val_dice["et"], val_dice["mean"],
             epoch_time,
         )
@@ -423,6 +440,7 @@ def main() -> None:
         log_csv(csv_path, {
             "epoch":      epoch + 1,
             "train_loss": round(train_loss, 6),
+            "val_loss":   round(val_dice["val_loss"], 6),
             "val_wt":     round(val_dice["wt"], 6),
             "val_tc":     round(val_dice["tc"], 6),
             "val_et":     round(val_dice["et"], 6),
