@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import time
+import traceback
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -30,7 +31,29 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
+def _force_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_force_utf8_stdio()
+
+# File handler so output is always captured on Windows (stdout unreliable in bash)
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_log.txt")
+_log_fh = logging.FileHandler(_log_path, mode="w", encoding="utf-8")
+_log_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_log_sh = logging.StreamHandler(sys.stdout)
+_log_sh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_root.handlers.clear()
+_root.addHandler(_log_fh)
+_root.addHandler(_log_sh)
 logger = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -295,8 +318,9 @@ def evaluate(args):
     print("=" * 65)
 
     # ── Save JSON ────────────────────────────────────────────────────────────
-    os.makedirs("results", exist_ok=True)
-    out_path = os.path.join("results", f"evaluation_{model_name}.json")
+    out_dir = os.path.join(ROOT, "results", "phase5_evaluation")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"evaluation_{model_name}.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     logger.info("Results saved: %s", out_path)
@@ -307,13 +331,27 @@ def evaluate(args):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
+    # Immediate sanity-check write — if this appears in eval_log.txt the script launched OK
+    with open(_log_path, "a", encoding="utf-8") as _f:
+        _f.write("=== evaluate.py started ===\n")
+        _f.flush()
+
     parser = argparse.ArgumentParser(description="Evaluate a trained segmentation model.")
     parser.add_argument("--config",     required=True,  help="Path to model config yaml")
     parser.add_argument("--checkpoint", required=True,  help="Path to best.pth checkpoint")
     parser.add_argument("--device",     default=None,   help="cuda or cpu (auto-detected if omitted)")
     args = parser.parse_args()
+    logger.info("Config: %s  Checkpoint: %s", args.config, args.checkpoint)
     evaluate(args)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        err = traceback.format_exc()
+        # Write crash to log file so it's always readable
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write("\nCRASH:\n" + err + "\n")
+        print("CRASH:", err, flush=True)
+        sys.exit(1)

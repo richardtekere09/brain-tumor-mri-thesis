@@ -19,7 +19,7 @@ checkpoints/
 
 # Results — generated outputs
 results/
-
+biobert_kaggle_upload/
 # Python
 __pycache__/
 *.py[cod]
