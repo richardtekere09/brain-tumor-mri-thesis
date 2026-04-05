@@ -200,18 +200,11 @@ def validate(model: nn.Module, loader: DataLoader, device: torch.device,
                 dice_scores[key].append(dice)
 
             # Val loss (same criterion as training)
-            if loss_fn is not None:
-                if model_name == "vision_text":
-                    seg, slot_pred, img_emb, txt_emb = model(
-                        image,
-                        batch["input_ids"].to(device),
-                        batch["attention_mask"].to(device),
-                    )
-                    vl, _ = loss_fn(seg, label, slot_pred,
-                                    batch["slot_labels"].to(device),
-                                    img_emb, txt_emb)
-                else:
-                    vl = loss_fn(pred_logits, label)
+            # Note: vision_text cannot run the full-volume image through the model
+            # directly (SwinUNETR requires dims divisible by 32). Dice from
+            # sliding-window inference is the primary val metric for Model C.
+            if loss_fn is not None and model_name != "vision_text":
+                vl = loss_fn(pred_logits, label)
                 val_losses.append(vl.item())
 
     means = {k: float(np.mean(v)) for k, v in dice_scores.items()}

@@ -182,6 +182,12 @@ class BraTSDataset(Dataset):
 
         if self.load_text:
             sample.update(self._load_text(case_id))
+            # Compute slot labels from the (post-transform) label patch
+            # label is [3, H, W, D] float tensor after remap_labels
+            label_t = sample["label"]
+            if not isinstance(label_t, torch.Tensor):
+                label_t = torch.from_numpy(label_t)
+            sample["slot_labels"] = compute_slot_labels(label_t)
 
         return sample
 
