@@ -171,7 +171,8 @@ def validate(model: nn.Module, loader: DataLoader, device: torch.device,
     from monai.inferers import sliding_window_inference
     model.eval()
     dice_scores = {"wt": [], "tc": [], "et": []}
-    val_losses = []
+    iou_scores  = {"wt": [], "tc": [], "et": []}
+    val_losses  = []
 
     with torch.no_grad():
         for batch in loader:
@@ -196,21 +197,28 @@ def validate(model: nn.Module, loader: DataLoader, device: torch.device,
                 p = pred_bin[:, ch]
                 t = label[:, ch]
                 inter = (p * t).sum()
-                dice = (2 * inter / (p.sum() + t.sum() + 1e-8)).item()
-                dice_scores[key].append(dice)
+                union = p.sum() + t.sum() - inter
+                dice_scores[key].append((2 * inter / (p.sum() + t.sum() + 1e-8)).item())
+                iou_scores[key].append((inter / (union + 1e-8)).item())
 
-            # Val loss (same criterion as training)
-            # Note: vision_text cannot run the full-volume image through the model
-            # directly (SwinUNETR requires dims divisible by 32). Dice from
-            # sliding-window inference is the primary val metric for Model C.
+            # Val loss — skipped for vision_text (full volume too large for SwinUNETR)
             if loss_fn is not None and model_name != "vision_text":
                 vl = loss_fn(pred_logits, label)
                 val_losses.append(vl.item())
 
-    means = {k: float(np.mean(v)) for k, v in dice_scores.items()}
-    means["mean"] = float(np.mean(list(means.values())))
-    means["val_loss"] = float(np.mean(val_losses)) if val_losses else 0.0
-    return means
+    out: Dict[str, float] = {}
+    for key in ["wt", "tc", "et"]:
+        out[f"dice_{key}"] = float(np.mean(dice_scores[key]))
+        out[f"iou_{key}"]  = float(np.mean(iou_scores[key]))
+    out["dice_mean"] = float(np.mean([out["dice_wt"], out["dice_tc"], out["dice_et"]]))
+    out["iou_mean"]  = float(np.mean([out["iou_wt"],  out["iou_tc"],  out["iou_et"]]))
+    out["val_loss"]  = float(np.mean(val_losses)) if val_losses else 0.0
+    # Keep legacy keys so rest of code works unchanged
+    out["wt"] = out["dice_wt"]
+    out["tc"] = out["dice_tc"]
+    out["et"] = out["dice_et"]
+    out["mean"] = out["dice_mean"]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +258,15 @@ def train_one_epoch(
     grad_accum: int,
     model_name: str,
     cfg: Dict,
-) -> float:
+) -> Dict[str, float]:
+    """Run one training epoch.
+
+    Returns dict with keys: total_loss, loss_seg, loss_text, loss_align, grad_norm.
+    loss_text and loss_align are 0.0 for Models A and B.
+    """
     model.train()
     total_loss = 0.0
+    seg_losses, text_losses, align_losses, grad_norms = [], [], [], []
     optimizer.zero_grad()
 
     for step, batch in enumerate(loader):
@@ -268,10 +282,15 @@ def train_one_epoch(
                     batch["attention_mask"].to(device),
                 )
                 slot_target = batch["slot_labels"].to(device)
-                loss, _ = loss_fn(seg_pred, label, slot_pred, slot_target, img_emb, txt_emb)
+                loss, components = loss_fn(seg_pred, label, slot_pred, slot_target,
+                                           img_emb, txt_emb)
+                seg_losses.append(components["seg"].item())
+                text_losses.append(components["text"].item())
+                align_losses.append(components["align"].item())
             else:
                 pred = model(image)
                 loss = loss_fn(pred, label)
+                seg_losses.append(loss.item())
 
             loss = loss / grad_accum
 
@@ -281,6 +300,14 @@ def train_one_epoch(
             loss.backward()
 
         if (step + 1) % grad_accum == 0:
+            # Compute gradient norm before stepping (works with and without AMP)
+            if scaler is not None and device.type == "cuda":
+                scaler.unscale_(optimizer)
+            gn = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), max_norm=float("inf")
+            ).item()
+            grad_norms.append(gn)
+
             if scaler is not None and device.type == "cuda":
                 scaler.step(optimizer)
                 scaler.update()
@@ -290,7 +317,14 @@ def train_one_epoch(
 
         total_loss += loss.item() * grad_accum
 
-    return total_loss / max(len(loader), 1)
+    n = max(len(loader), 1)
+    return {
+        "total_loss":  total_loss / n,
+        "loss_seg":    float(np.mean(seg_losses))   if seg_losses   else 0.0,
+        "loss_text":   float(np.mean(text_losses))  if text_losses  else 0.0,
+        "loss_align":  float(np.mean(align_losses)) if align_losses else 0.0,
+        "grad_norm":   float(np.mean(grad_norms))   if grad_norms   else 0.0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -413,33 +447,58 @@ def main() -> None:
         maybe_freeze_stage1(model, epoch, cfg)
 
         t0 = time.time()
-        train_loss = train_one_epoch(
+        train_out = train_one_epoch(
             model, train_loader, optimizer, loss_fn,
             scaler, device, grad_accum, model_name, cfg,
         )
         epoch_time = time.time() - t0
 
-        val_dice = validate(model, val_loader, device, model_name, loss_fn)
-        scheduler.step(val_dice["mean"])
+        train_loss = train_out["total_loss"]
+        val_metrics = validate(model, val_loader, device, model_name, loss_fn)
+        scheduler.step(val_metrics["mean"])
+
+        # GPU memory (peak this epoch, reset after logging)
+        if device.type == "cuda":
+            gpu_mem_gb = torch.cuda.max_memory_allocated(device) / 1024 ** 3
+            torch.cuda.reset_peak_memory_stats(device)
+        else:
+            gpu_mem_gb = 0.0
+
+        is_best = val_metrics["mean"] > best_dice
 
         logger.info(
-            "Epoch %3d | train_loss=%.4f | val_loss=%.4f | val WT=%.4f TC=%.4f ET=%.4f mean=%.4f | %.1fs",
-            epoch + 1, train_loss, val_dice["val_loss"],
-            val_dice["wt"], val_dice["tc"], val_dice["et"], val_dice["mean"],
-            epoch_time,
+            "Epoch %3d | loss=%.4f (seg=%.4f txt=%.4f aln=%.4f) | "
+            "val Dice WT=%.4f TC=%.4f ET=%.4f mean=%.4f | "
+            "IoU mean=%.4f | gn=%.2f | %.1fs",
+            epoch + 1, train_loss,
+            train_out["loss_seg"], train_out["loss_text"], train_out["loss_align"],
+            val_metrics["dice_wt"], val_metrics["dice_tc"], val_metrics["dice_et"],
+            val_metrics["dice_mean"], val_metrics["iou_mean"],
+            train_out["grad_norm"], epoch_time,
         )
 
-        # CSV log
+        # CSV log — all columns; Models A/B leave loss_text/loss_align as 0.0
         log_csv(csv_path, {
-            "epoch":      epoch + 1,
-            "train_loss": round(train_loss, 6),
-            "val_loss":   round(val_dice["val_loss"], 6),
-            "val_wt":     round(val_dice["wt"], 6),
-            "val_tc":     round(val_dice["tc"], 6),
-            "val_et":     round(val_dice["et"], 6),
-            "val_mean":   round(val_dice["mean"], 6),
-            "epoch_secs": round(epoch_time, 1),
-            "lr":         optimizer.param_groups[0]["lr"],
+            "epoch":          epoch + 1,
+            "train_loss":     round(train_loss, 6),
+            "val_loss":       round(val_metrics["val_loss"], 6),
+            "val_dice_wt":    round(val_metrics["dice_wt"], 6),
+            "val_dice_tc":    round(val_metrics["dice_tc"], 6),
+            "val_dice_et":    round(val_metrics["dice_et"], 6),
+            "val_dice_mean":  round(val_metrics["dice_mean"], 6),
+            "val_iou_wt":     round(val_metrics["iou_wt"], 6),
+            "val_iou_tc":     round(val_metrics["iou_tc"], 6),
+            "val_iou_et":     round(val_metrics["iou_et"], 6),
+            "val_iou_mean":   round(val_metrics["iou_mean"], 6),
+            "loss_seg":       round(train_out["loss_seg"], 6),
+            "loss_text":      round(train_out["loss_text"], 6) if model_name == "vision_text" else "",
+            "loss_align":     round(train_out["loss_align"], 6) if model_name == "vision_text" else "",
+            "lr":             optimizer.param_groups[0]["lr"],
+            "grad_norm":      round(train_out["grad_norm"], 4),
+            "best_val_mean":  round(best_dice, 6),
+            "is_best":        int(is_best),
+            "epoch_secs":     round(epoch_time, 1),
+            "gpu_mem_gb":     round(gpu_mem_gb, 3),
         })
 
         # Save last checkpoint every epoch
@@ -455,8 +514,8 @@ def main() -> None:
         save_checkpoint(state, last_ckpt)
 
         # Save best checkpoint
-        if val_dice["mean"] > best_dice:
-            best_dice = val_dice["mean"]
+        if is_best:
+            best_dice = val_metrics["mean"]
             state["best_dice"] = best_dice
             save_checkpoint(state, os.path.join(save_dir, "best.pth"))
             logger.info("  New best val Dice: %.4f — best.pth saved", best_dice)
