@@ -481,7 +481,7 @@ def main() -> None:
         log_csv(csv_path, {
             "epoch":          epoch + 1,
             "train_loss":     round(train_loss, 6),
-            "val_loss":       round(val_metrics["val_loss"], 6),
+            "val_loss":       "" if model_name == "vision_text" else round(val_metrics["val_loss"], 6),
             "val_dice_wt":    round(val_metrics["dice_wt"], 6),
             "val_dice_tc":    round(val_metrics["dice_tc"], 6),
             "val_dice_et":    round(val_metrics["dice_et"], 6),
